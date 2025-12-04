@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 from telethon import TelegramClient, events
 
-API_ID = 25577737
-API_HASH = 'b291315db388c8cc41cd879393458548'
+API_ID = 39140065
+API_HASH = '929779a46119c86a7f74f7c4c6ddabd3'
 
-client = TelegramClient("get_ids", API_ID, API_HASH)
+client = TelegramClient("akun_rozi_rizky", API_ID, API_HASH)
 SOURCE_CHANNEL = None  # tidak tahu di awal
 SOURCE_CHANNEL_FILE = Path("source_channel.json")
 GROUP_LIST_FILE = Path("group_list.json")
