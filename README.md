@@ -1,4 +1,4 @@
-# Tele Clone Saham Forwarder
+# Tele Clone Forwarder
 
 A Python-based Telegram bot system designed to forward messages from multiple source channels/groups to a single target channel/supergroup. It supports topic mapping (forums), media forwarding, and uses `Telethon` for MTProto communication.
 
