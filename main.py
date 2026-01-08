@@ -82,6 +82,17 @@ def parse_start_date(raw_value, receiver_name):
     raise ValueError(f"start_date for receiver {receiver_name} must be string or timestamp.")
 
 
+def parse_optional_int(raw_value, field_name, receiver_name):
+    if raw_value in (None, "", "null"):
+        return None
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{field_name} untuk receiver {receiver_name} harus berupa integer."
+        ) from exc
+
+
 def load_receivers_config():
     if not RECEIVERS_CONFIG_FILE.exists():
         raise FileNotFoundError(f"Tidak menemukan {RECEIVERS_CONFIG_FILE}.")
@@ -101,10 +112,11 @@ def load_receivers_config():
         api_id = entry.get("api_id")
         api_hash = entry.get("api_hash")
         source_channel = entry.get("source_channel")
-        topic_id = entry.get("topic_id")
+        target_topic_id = entry.get("target_topic_id", entry.get("topic_id"))
+        source_topic_id = entry.get("source_topic_id")
         target_channel_override = entry.get("target_channel_id")
 
-        if not all([name, session, api_id, api_hash, source_channel, topic_id]):
+        if not all([name, session, api_id, api_hash, source_channel, target_topic_id]):
             raise ValueError(f"Receiver config tidak lengkap: {entry}")
 
         normalized.append(
@@ -114,7 +126,8 @@ def load_receivers_config():
                 "api_id": int(api_id),
                 "api_hash": str(api_hash),
                 "source_channel": int(source_channel),
-                "topic_id": int(topic_id),
+                "target_topic_id": int(target_topic_id),
+                "source_topic_id": parse_optional_int(source_topic_id, "source_topic_id", name),
                 "target_channel": int(target_channel_override)
                 if target_channel_override
                 else TARGET_CHANNEL,
@@ -248,6 +261,27 @@ def extract_reply_to_id(msg):
         )
     return None
 
+
+def extract_topic_thread_id(msg):
+    """Return topic thread ID (top message id) if message belongs to a forum topic."""
+    header = getattr(msg, "reply_to", None)
+    if not header:
+        return None
+    return (
+        getattr(header, "reply_to_top_id", None)
+        or getattr(header, "reply_to_msg_id", None)
+    )
+
+
+def message_matches_source_topic(msg, topic_id):
+    """Check if message belongs to desired source topic (or allow all if None)."""
+    if topic_id is None:
+        return True
+    topic = extract_topic_thread_id(msg)
+    if topic is None:
+        return False
+    return topic == topic_id or msg.id == topic_id
+
 async def resolve_sender_name(msg):
     """Return readable sender/post author info for groups."""
     if msg.post_author:
@@ -297,7 +331,7 @@ async def save_to_queue(receiver_conf, msg, local_file=None):
         "media_type": media_type,
         "receiver": receiver_name,
         "target_channel_id": target_channel,
-        "target_topic_id": receiver_conf["topic_id"],
+        "target_topic_id": receiver_conf["target_topic_id"],
         "source_channel_id": receiver_conf["source_channel"]
     }
 
@@ -333,15 +367,20 @@ async def process_message(receiver_conf, msg):
 async def catch_up_receiver(receiver_conf, client):
     last_id = load_last_id(receiver_conf["name"])
     entity = await client.get_entity(receiver_conf["source_channel"])
+    source_topic_id = receiver_conf["source_topic_id"]
 
     if last_id > 0:
         print(f"[{receiver_conf['name']}] ⏪ Continue from ID {last_id}")
         async for msg in client.iter_messages(entity, min_id=last_id, reverse=True):
+            if not message_matches_source_topic(msg, source_topic_id):
+                continue
             await process_message(receiver_conf, msg)
     else:
         start_date = receiver_conf["start_date"]
         print(f"[{receiver_conf['name']}] 📅 First run since: {start_date}")
         async for msg in client.iter_messages(entity, offset_date=start_date, reverse=True):
+            if not message_matches_source_topic(msg, source_topic_id):
+                continue
             await process_message(receiver_conf, msg)
 
 # ---------------------------------------------------------
@@ -352,6 +391,8 @@ for session_entry in receiver_sessions.values():
     for rc_conf in session_entry["configs"]:
         @client.on(events.NewMessage(chats=rc_conf["source_channel"]))
         async def receiver_handler(event, receiver_conf=rc_conf):
+            if not message_matches_source_topic(event.message, receiver_conf["source_topic_id"]):
+                return
             await process_message(receiver_conf, event.message)
 
 # ---------------------------------------------------------

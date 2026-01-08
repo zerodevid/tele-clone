@@ -20,3 +20,7 @@ last_id.json
 message_map.json
 .env
 receivers.json
+
+*.service
+group_list.json
+source_channel.json

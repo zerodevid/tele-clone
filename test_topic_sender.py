@@ -66,9 +66,9 @@ async def send_test_message(receiver_name: str, message: str):
     if not selected:
         raise ValueError(f"Tidak menemukan receiver bernama '{receiver_name}'.")
 
-    topic_id = selected.get("topic_id")
+    topic_id = selected.get("target_topic_id", selected.get("topic_id"))
     if topic_id is None:
-        raise ValueError(f"Receiver '{receiver_name}' tidak memiliki topic_id.")
+        raise ValueError(f"Receiver '{receiver_name}' tidak memiliki target_topic_id/topic_id.")
 
     try:
         topic_id = int(topic_id)
