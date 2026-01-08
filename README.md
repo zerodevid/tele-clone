@@ -9,6 +9,7 @@ A Python-based Telegram bot system designed to forward messages from multiple so
 - **Session Management**: Supports multiple Telegram user accounts/sessions.
 - **Queue System**: Handles messages in a queue to prevent flooding and ensure order.
 - **ID Helper**: Includes tools to easily discover Chat IDs and Topic IDs.
+- **Webhook Notifications**: Send message data to external webhooks (n8n, Zapier, Make, etc.) with Basic Auth support.
 
 ## 🛠 Prerequisites
 
@@ -26,8 +27,9 @@ A Python-based Telegram bot system designed to forward messages from multiple so
     ```
 3.  **Install dependencies**:
     ```bash
-    pip install telethon
+    pip install telethon aiohttp
     ```
+    > **Note**: `aiohttp` is optional but required for webhook notifications.
 
 ## ⚙️ Configuration
 
@@ -44,7 +46,68 @@ TARGET_CHANNEL_ID=-100xxxxxxxxx
 *   `SENDER_API_ID` / `SENDER_API_HASH`: Your Telegram API credentials.
 *   `TARGET_CHANNEL_ID`: The ID of the channel/group where messages will be sent.
 
-### 2. Receiver Configuration (`receivers.json`)
+### 2. Webhook Configuration (Optional)
+
+To enable webhook notifications, add the following to your `.env` file:
+
+```env
+# Webhook URL (n8n, Zapier, Make, etc.)
+WEBHOOK_URL=https://your-webhook-url.com/endpoint
+
+# Basic Auth credentials (optional)
+WEBHOOK_AUTH_USERNAME=your_username
+WEBHOOK_AUTH_PASSWORD=your_password
+```
+
+*   `WEBHOOK_URL`: The endpoint to send POST requests to. Leave empty to disable.
+*   `WEBHOOK_AUTH_USERNAME` / `WEBHOOK_AUTH_PASSWORD`: Basic Auth credentials (optional).
+
+#### Webhook Payload Structure
+
+When a message is successfully forwarded, the following JSON payload is sent:
+
+```json
+{
+  "event_type": "message_forwarded",
+  "timestamp": "2026-01-08T21:40:00+07:00",
+  "source": {
+    "channel_id": -1001234567890,
+    "message_id": 12345,
+    "topic_id": null
+  },
+  "destination": {
+    "channel_id": -1009876543210,
+    "message_id": 54321,
+    "topic_id": 123
+  },
+  "message": {
+    "text": "The message content...",
+    "author": "John Doe (@johndoe)",
+    "forwarded_from": "Channel ABC",
+    "has_media": true,
+    "media_type": "photo"
+  },
+  "receiver": {
+    "name": "Source Name"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `event_type` | Always `"message_forwarded"` |
+| `timestamp` | ISO 8601 timestamp with timezone |
+| `source.channel_id` | Original channel ID |
+| `source.message_id` | Original message ID |
+| `destination.channel_id` | Target channel ID |
+| `destination.message_id` | New message ID in target |
+| `message.text` | Message text content |
+| `message.has_media` | `true` if message contains media |
+| `message.media_type` | `photo`, `video`, `document`, `audio`, `voice`, or `null` |
+
+> **Note**: Media files are NOT sent to the webhook, only metadata.
+
+### 3. Receiver Configuration (`receivers.json`)
 Create or edit `receivers.json` to define where to grab messages *from*. This file is a JSON array of objects.
 
 ```json
@@ -113,13 +176,45 @@ python main.py
     - The Sender client monitors the queue.
     - It picks up messages and sends them to the `TARGET_CHANNEL_ID` (and specific `target_topic_id`).
     - It maintains mapped message IDs in `message_map.json` to handle replies correctly.
+5.  **Webhook Notification** (Optional):
+    - After a message is successfully sent, a webhook POST request is fired.
+    - The request is non-blocking (fire-and-forget) and won't affect the main flow.
+    - Errors are logged but ignored to ensure uninterrupted forwarding.
 
 ## 📂 File Structure
 
 - `main.py`: Main application entry point.
 - `get_id.py`: Utility tool for ID discovery.
 - `receivers.json`: Configuration for source channels.
-- `.env`: Configuration for the sender/target.
+- `.env`: Configuration for the sender/target and webhook.
+- `.env.example`: Template for environment variables.
 - `message_queue/`: Temporary storage for incoming messages.
 - `downloads/`: Temporary storage for media files.
 - `*.session`: Telegram session files (do not share/commit these!).
+
+## 🔌 Webhook Integration Examples
+
+### n8n
+
+1. Create a new workflow with a **Webhook** trigger node.
+2. Copy the webhook URL and add it to your `.env`.
+3. Use the incoming JSON data in subsequent nodes.
+
+### Zapier / Make
+
+1. Create a **Webhooks by Zapier** or **Custom Webhook** trigger.
+2. Copy the webhook URL to your `.env`.
+3. Map the JSON fields to your desired actions.
+
+## 🐛 Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `aiohttp not installed` warning | Run `pip install aiohttp` |
+| Webhook not firing | Check `WEBHOOK_URL` is set correctly in `.env` |
+| `FloodWaitError` | The bot is rate-limited. Wait and retry. |
+| Session expired | Delete the `.session` file and re-authenticate. |
+
+## 📜 License
+
+MIT License - feel free to use and modify.

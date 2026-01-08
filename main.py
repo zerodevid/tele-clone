@@ -2,9 +2,17 @@ import json
 import os
 import asyncio
 import datetime
+import base64
 from pathlib import Path
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
+
+try:
+    import aiohttp
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
+    print("⚠️ aiohttp not installed. Webhook feature disabled. Install with: pip install aiohttp")
 
 
 def load_dotenv_file(path: str = ".env"):
@@ -51,6 +59,17 @@ SENDER_API_HASH = require_env("SENDER_API_HASH")
 SENDER_SESSION = os.getenv("SENDER_SESSION_NAME", "sender_session")
 
 TARGET_CHANNEL = require_int_env("TARGET_CHANNEL_ID")
+
+# Webhook config (optional)
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+WEBHOOK_AUTH_USERNAME = os.getenv("WEBHOOK_AUTH_USERNAME", "").strip()
+WEBHOOK_AUTH_PASSWORD = os.getenv("WEBHOOK_AUTH_PASSWORD", "").strip()
+WEBHOOK_ENABLED = bool(WEBHOOK_URL) and AIOHTTP_AVAILABLE
+
+if WEBHOOK_URL and not AIOHTTP_AVAILABLE:
+    print("⚠️ WEBHOOK_URL is set but aiohttp is not installed. Webhook disabled.")
+elif WEBHOOK_ENABLED:
+    print(f"✅ Webhook enabled: {WEBHOOK_URL[:50]}...")
 
 DEFAULT_START_DATE = datetime.datetime(2025, 12, 1)
 
@@ -182,6 +201,42 @@ def save_message_map(data):
 
 def map_key(receiver_name, msg_id):
     return f"{receiver_name}:{msg_id}"
+
+
+# ---------------------------------------------------------
+# WEBHOOK FUNCTION (Fire & Forget)
+# ---------------------------------------------------------
+async def send_webhook(payload: dict):
+    """Send payload to webhook. Non-blocking, fire-and-forget."""
+    if not WEBHOOK_ENABLED:
+        return
+
+    try:
+        headers = {"Content-Type": "application/json"}
+
+        # Add Basic Auth if configured
+        if WEBHOOK_AUTH_USERNAME and WEBHOOK_AUTH_PASSWORD:
+            credentials = f"{WEBHOOK_AUTH_USERNAME}:{WEBHOOK_AUTH_PASSWORD}"
+            encoded = base64.b64encode(credentials.encode()).decode()
+            headers["Authorization"] = f"Basic {encoded}"
+
+        timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                WEBHOOK_URL,
+                json=payload,
+                headers=headers
+            ) as response:
+                if response.status >= 200 and response.status < 300:
+                    print(f"🌐 WEBHOOK: Success (status {response.status})")
+                else:
+                    print(f"⚠️ WEBHOOK: Non-success status {response.status}")
+
+    except asyncio.TimeoutError:
+        print("⚠️ WEBHOOK: Timeout - Ignoring")
+    except Exception as e:
+        print(f"⚠️ WEBHOOK: Failed ({type(e).__name__}: {e}) - Ignoring")
 
 
 receiver_configs = load_receivers_config()
@@ -321,6 +376,14 @@ async def save_to_queue(receiver_conf, msg, local_file=None):
     receiver_name = receiver_conf["name"]
     target_channel = receiver_conf["target_channel"]
 
+    # Resolve source channel name from chat entity
+    source_channel_name = None
+    try:
+        chat = await msg.get_chat()
+        source_channel_name = getattr(chat, "title", None) or getattr(chat, "name", None)
+    except Exception:
+        pass
+
     data = {
         "msg_id": msg.id,
         "text": msg.text or msg.message,
@@ -332,7 +395,9 @@ async def save_to_queue(receiver_conf, msg, local_file=None):
         "receiver": receiver_name,
         "target_channel_id": target_channel,
         "target_topic_id": receiver_conf["target_topic_id"],
-        "source_channel_id": receiver_conf["source_channel"]
+        "source_channel_id": receiver_conf["source_channel"],
+        "source_channel_name": source_channel_name,
+        "source_topic_id": receiver_conf.get("source_topic_id")
     }
 
     if msg.fwd_from:
@@ -520,6 +585,36 @@ async def send_from_queue():
                 save_message_map(message_map)
 
                 print(f"✅ SENT [{receiver_name}]: {msg_id} → {last_sent.id}")
+
+                # Send webhook notification (fire & forget)
+                if WEBHOOK_ENABLED:
+                    webhook_payload = {
+                        "event_type": "message_forwarded",
+                        "timestamp": datetime.datetime.now().astimezone().isoformat(),
+                        "source": {
+                            "channel_id": data.get("source_channel_id"),
+                            "channel_name": data.get("source_channel_name"),
+                            "message_id": msg_id,
+                            "topic_id": data.get("source_topic_id")
+                        },
+                        "destination": {
+                            "channel_id": target_channel_id,
+                            "message_id": primary_sent.id,
+                            "topic_id": topic_id
+                        },
+                        "message": {
+                            "text": data.get("text") or "",
+                            "author": data.get("post_author"),
+                            "forwarded_from": data.get("fwd_info"),
+                            "has_media": bool(data.get("media_path")),
+                            "media_type": data.get("media_type")
+                        },
+                        "receiver": {
+                            "name": receiver_name
+                        }
+                    }
+                    # Fire and forget - don't await
+                    asyncio.create_task(send_webhook(webhook_payload))
 
                 # remove local media after successful send
                 if data.get("media_path") and os.path.exists(data["media_path"]):

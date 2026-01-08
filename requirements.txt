@@ -1,0 +1,7 @@
+# Telegram Clone Forwarder - Dependencies
+
+# Core dependency - Telegram MTProto client
+telethon>=1.36.0
+
+# Optional - Required for webhook notifications
+aiohttp>=3.9.0
